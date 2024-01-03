@@ -39,15 +39,6 @@ class Encode_Transformer(nn.Module):
         self.dropout = nn.Dropout(dropout_tra)
         self.fn = nn.Linear(self.emb_size, 1)
 
-    def get_attention_mask(self, mask, bidirectional=False):
-        """Generate left-to-right uni-directional or bidirectional attention mask for multi-head attention."""
-        attention_mask = mask.to(torch.bool)
-        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # torch.bool
-        if not bidirectional:
-            extended_attention_mask = torch.tril(extended_attention_mask.expand((-1, -1, mask.size(-1), -1)))
-        extended_attention_mask = torch.where(extended_attention_mask, 0., -10000.)
-        return extended_attention_mask
-
     def forward(self, X, mask):
         pos_embedding = self.position_embedding(torch.arange(mask.shape[1], device='cuda', dtype=torch.int64))
         input_X = X + pos_embedding.unsqueeze(0).expand_as(X)
@@ -55,20 +46,25 @@ class Encode_Transformer(nn.Module):
         input_X = self.dropout(input_X)
 
         # attention_mask = self.get_attention_mask(mask)
-        attention_mask = mask
+        # FloatTensor
+        # key_mask = torch.where(mask.to(torch.bool), 0., -9e15)  # (N, L)
+        key_mask = torch.logical_not(mask.to(torch.bool))
         # self-attn 正常遮罩
-        attention_mask = attention_mask.unsqueeze(1).expand(-1, mask.size(-1), -1) * mask.unsqueeze(-1)
+        attention_mask = mask.unsqueeze(1).expand(-1, mask.size(-1), -1)
         attention_mask = torch.tril(attention_mask)
-        attention_mask = torch.logical_not(attention_mask).repeat(2, 1, 1)
+        # attention_mask = torch.logical_not(attention_mask).repeat(self.heads, 1, 1)
+        # attention_mask = torch.where(attention_mask.to(torch.bool), 0., -9e15)
+        attention_mask = torch.logical_not(attention_mask.to(torch.bool))
+        # attention_mask = attention_mask.repeat(self.heads, 1, 1)
+        attention_mask = attention_mask.unsqueeze(1).repeat(1, self.heads, 1, 1).contiguous().view(mask.size(0) * self.heads, mask.size(-1), -1)
+        attention_result = self.transformer(input_X, mask=attention_mask, src_key_padding_mask=key_mask)
+        # src_key_padding_mask=key_mask
 
-        attention_result = self.transformer(input_X, mask=attention_mask)
+        alpha = self.fn(attention_result).to(torch.float64)  # 注意精度
+        alpha = torch.where(mask.to(torch.bool).unsqueeze(-1), alpha, -9e15)
+        alpha = torch.softmax(alpha, dim=1, dtype=torch.float32)
 
-        alpha = self.fn(attention_result)
-        alpha = torch.where(mask.unsqueeze(-1), alpha, -9e15)
-        alpha = torch.softmax(alpha, dim=1)
-
-        X = torch.sum(alpha * X, dim=-1)
-        X = F.normalize(X, dim=-1)
+        X = torch.sum(alpha * X, dim=1)
 
         return X
 

@@ -10,6 +10,6 @@ class P_MRR_Record:
 
     def __call__(self, precision, mrr, *args, **kwargs):
         with open(self.save_path + '/precision.txt', 'a') as f:
-            f.write(str(precision) +'\n')
+            f.write(str(precision) + '\n')
         with open(self.save_path + '/mrr.txt', 'a') as f:
             f.write(str(mrr) + '\n')
